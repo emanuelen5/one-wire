@@ -1,9 +1,3 @@
-#ifndef uint8_t
-typedef unsigned char uint8_t;
-#endif
-#ifndef int8_t
-typedef signed char int8_t;
-#endif
 #ifndef BV
 #  define BV(n) (1 << (n))
 #endif

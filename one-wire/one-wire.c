@@ -124,6 +124,8 @@ int8_t wire1Reset(void) {
   // Wire shall be held by slave for 60-240 us
   if (!wire1Poll4Release(60)) { // (246) 254 us = 4*60 + 14
     return -1; // The wire was never released
+  } else if (wire1Poll4Hold(58)) { // Wait out the rest of the slot
+    return -2;
   } else {
     return 1; // Success!
   }
@@ -221,4 +223,33 @@ void wire1WriteByte(uint8_t writeByte) {
   for (int i = 0; i < 8; i++) {
     wire1WriteBit(writeByte & BV(i));
   }
+}
+
+/**
+ * Searches the address space for the next larger device than addrStart
+ * @param  addrOut      The output address for the returned ROM
+ * @param  lastConfBit  The last value of the conflict bit (zero or nonzero)
+ * @param  lastConfPos  The bit position of the conflict bit (0-63 if conflict)
+ * @return              0 if no device was identified, 1 if device was identified, any other means error
+ */
+uint8_t wire1SearchROM(uint8_t const *addrOut, const uint8_t lastConfBit, const uint8_t lastConfPos) {
+  if (wire1Reset() != 1) // Detect if there are any devices connected
+    return -1;
+
+  wire1WriteByte(0xF0);
+
+  uint8_t addrAck, addrNAck;
+
+  uint8_t iByte = -1;
+  for (int iBit = 0; iBit < 64; iBit++) {
+    // Next byte when bit has "overflowed"
+    if ((iBit+1) % 8 == 0) {
+      addrOut[iByte][iBit] = 0;
+      iByte++;
+    }
+
+    addrAck  = wire1ReadBit();
+    addrNAck = wire1ReadBit();
+  }
+
 }
