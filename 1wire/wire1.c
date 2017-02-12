@@ -1,25 +1,31 @@
 #include <util/delay.h>
 #include <avr/io.h>
-#include "wire1.h"
+#include "one-wire.h"
 
-// MACROS for being able to use convenient DB-"variables"
-#define DBPORT_LETTER  B
-#define DBPP           0
-#define CONCAT(a, b)      a ## b
-#define CONCAT_EXP(a, b)  CONCAT(a, b)
-#define DBDDR             CONCAT_EXP(DDR,  DBPORT_LETTER)
-#define DBPIN             CONCAT_EXP(PIN,  DBPORT_LETTER)
-#define DBPORT            CONCAT_EXP(PORT, DBPORT_LETTER)
+// MACROS for being able to use convenient W1_-"variables
+#ifndef W1_PORT_LETTER
+  #warning W1_PORT_LETTER needs to be defined to be able to resolve \
+          the 1-wire interface position. It was set B as default.
+  #define W1_PORT_LETTER  B
+#endif
+#ifndef W1_PIN_POS
+  #warning W1_PIN_POS needs to be defined to be able to resolve \
+           the 1-wire interface position. It was set 0 as default.
+  #define W1_PIN_POS      0
+#endif
 
-#define STRINGIFY(a) #a
-#define STRINGIFY_EXPAND(a) STRINGIFY(a)
+#define CONCAT(a, b)        a ## b // Concatenates a and b
+#define CONCAT_EXPAND(a, b) CONCAT(a, b) // Resolves a and b, then concatenates them
+
+#define STRINGIFY(a)        #a // Puts quotes around a
+#define STRINGIFY_EXPAND(a) STRINGIFY(a) // Resolves a, then turns into string
 
 /**
  * Drives the wire low.
  */
 inline void wire1Hold(void) {
-  DBPORT &= ~BV(DBPP); // Drive low/remove pullup
-  DBDDR  |=  BV(DBPP); // Pin as output
+  CONCAT_EXPAND(PORT, W1_PORT_LETTER) &= ~BV(W1_PIN_POS); // Drive low/remove pullup
+  CONCAT_EXPAND(DDR,  W1_PORT_LETTER) |=  BV(W1_PIN_POS); // Pin as output
 }
 
 /**
@@ -27,62 +33,97 @@ inline void wire1Hold(void) {
  *  Also adds the internal pullup to strengthen the pull up "force".
  */
 inline void wire1Release(void) {
-  DBDDR  &= ~BV(DBPP); // Pin as input
-  DBPORT |=  BV(DBPP); // Add pullup
+  CONCAT_EXPAND(DDR,  W1_PORT_LETTER) &= ~BV(W1_PIN_POS); // Pin as input
+  CONCAT_EXPAND(PORT, W1_PORT_LETTER) |=  BV(W1_PIN_POS); // Add pullup
 }
 
 /**
- * Polls the wire a maximum of times, or until someone drives it low
- * @param  nloops  Number of times to poll
- * @return         0 if it goes low within the time limit, otherwise DBPP
+ * Polls the wire a number of times, or until someone drives it low
+ * Cycles taken for a complete function call:
+ *   - If timeout:    14 + 4*nloops
+ *   - If driven low: 14 + 4*(return value)
+ * Time when line was driven:
+ *   At most three cycles before 6 + 4*(return value) if
+ *   return value is greater than 1, otherwise between cycle 1-10
+ *
+ * @param  nloops  Maximum number of times to poll
+ * @return         0 if timeout, otherwise the number of samples taken before low
  */
-inline uint8_t wire1Poll4Hold(uint8_t nloops) {
-  uint8_t readVal = DBPIN & BV(DBPP);
-  uint8_t i = 0;
-  while (i < nloops && readVal) {
-    readVal &= DBPIN & BV(DBPP);
-    i++;
-  }
-  return readVal;
+uint8_t wire1Poll4Hold(uint8_t nloops) {
+  uint8_t i = nloops;
+  asm volatile(
+      "tst  %[nloops] \n\t"
+      "breq done%= \n\t"
+    "loop%=:" 
+      "subi %[count], 1  \n\t"        // Add 1 to counter (loop time)
+      "sbic %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // Exit loop if wire is held low
+      "brne loop%= \n\t" // Keep looping if larger than 0
+
+      "brne done%= \n\t"
+      "clr  %[nloops] \n\t" // Return 0 if timeout
+    "done%=:"
+      "sub  %[nloops], %[count] \n\t" // Return number of loops that were run
+    : [count]  "+r" (i),       // Output operands
+      [nloops] "+r" (nloops)
+    : [port]   "I"  (_SFR_IO_ADDR(CONCAT_EXPAND(PIN, W1_PORT_LETTER)))
+  );
+  return nloops;
 }
 
 /**
- * Polls the wire a maximum of times, or until it is released
- * @param  nloops  Number of times to poll
- * @return         DBPP if it goes high within the time limit, otherwise 0
+ * Polls the wire a number of times, or until it is released
+ * Cycles taken for a complete function call:
+ *   - If timeout:    14 + 4*nloops
+ *   - If driven low: 14 + 4*(return value)
+ * Time when line was driven:
+ *   At most three cycles before 6 + 4*(return value) if
+ *   return value is greater than 1, otherwise between cycle 1-10
+ *
+ * @param  nloops  Maximum number of times to poll
+ * @return         0 if timeout, otherwise the number of samples taken before high
  */
-inline uint8_t wire1Poll4Release(uint8_t nloops) {
-  uint8_t readVal = DBPIN & BV(DBPP);
-  uint8_t i = 0;
-  while (i < nloops && !readVal) {
-    readVal |= DBPIN & BV(DBPP);
-    i++;
-  }
-  return readVal;
+uint8_t wire1Poll4Release(uint8_t nloops) {
+  uint8_t i = nloops;
+  asm volatile(
+      "tst  %[nloops] \n\t"
+      "breq done%= \n\t"
+    "loop%=:" 
+      "subi %[count], 1  \n\t"        // Add 1 to counter (loop time)
+      "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // Exit loop if wire is held low
+      "brne loop%= \n\t" // Keep looping if larger than 0
+
+      "brne done%= \n\t"
+      "clr  %[nloops] \n\t" // Return 0 if timeout
+    "done%=:"
+      "sub  %[nloops], %[count] \n\t" // Return number of loops that were run
+    : [count]  "+r" (i),       // Output operands
+      [nloops] "+r" (nloops)
+    : [port]   "I"  (_SFR_IO_ADDR(CONCAT_EXPAND(PIN, W1_PORT_LETTER)))
+  );
+  return nloops;
 }
 
 /**
  * Resets all 1-wire devices and checks if there are any slaves that responds.
+ * The time of the last sample is written within parentheses as comments after
+ * the poll calls. The total time for the function call is written after that.
+ * 
  * @return  negative if error, 0 if no slave responds, 1 if a slave responds
  */
-uint8_t  wire1Reset(void) {
+int8_t wire1Reset(void) {
   // Hold for 450+ us to reset
   wire1Hold();
-  if (wire1Poll4Release(550)) {
-    return -1; // Wire went high even though we're pulling it down!
-  }
+  // Use our own precision delay (will not exit early, since we hold the wire)
+  wire1Poll4Release(122); // (494) 502 us = 4*122 + 14
   wire1Release();
 
-  // Keep released for 15-60 us before response
-  if (!wire1Poll4Hold(10)) {
-    return -2; // The wire was held too early, someone is driving it simultaneously
+  // Check if there is a response within 60 us
+  if (!wire1Poll4Hold(15)) { // (66) 74 us = 4*15 + 14
+    return 0;
   }
-  if (wire1Poll4Hold(60)) {
-    return 0; // The wire never went low
-  }
-  // Held 60-240 us by slave
-  if (!wire1Poll4Release(300)) {
-    return -3; // The wire was never released
+  // Wire shall be held by slave for 60-240 us
+  if (!wire1Poll4Release(60)) { // (246) 254 us = 4*60 + 14
+    return -1; // The wire was never released
   } else {
     return 1; // Success!
   }
@@ -92,29 +133,54 @@ uint8_t  wire1Reset(void) {
  * Forces slaves into next state and then reads the returned value
  * @return  0 if wire was held low, otherwise nonzero
  */
-uint8_t  wire1Read(void) {
+int8_t wire1Read(void) {
+  uint8_t bittest = 0;
+  // Store the register so we can use it throughout the function
+  asm volatile(
+      "push r25     \n\t"
+      "ldi  r25, 4  \n\t" // 4*15 = 60
+    );
+
   // Hold for >1 us to update state of slaves
   wire1Hold();
-  if (wire1Poll4Release(1)) {
-    return -1; // Wire went high even though we're pulling it down!
-  }
+  asm volatile("nop\n\t" : : ); // Wait one cycle before releasing
   wire1Release();
 
-  uint8_t readVal = wire1Poll4Release(10);
-  _delay_us(45);
-  return readVal;
+  // Supersampe wire 24 times for 60 us to determine if it is driven low
+  asm volatile(
+    "loop:"
+      "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // 1
+      "inc  %[bittest]                                \n\t" // 2
+      "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // 3
+      "inc  %[bittest]                                \n\t" // 4
+      "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // 5
+      "inc  %[bittest]                                \n\t" // 6
+      "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // 7
+      "inc  %[bittest]                                \n\t" // 8
+      "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // 9
+      "inc  %[bittest]                                \n\t" // 10
+      "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // 11
+      "inc  %[bittest]                                \n\t" // 12
+      // Go back
+      "subi r25, 1                                    \n\t" // 13
+      "brne loop                                      \n\t" // 14 + 1
+      // Finished
+      "pop   r25                                      \n\t" // 20
+    : [bittest]  "+r" (bittest)       // Output operands
+    : [port]     "I"  (_SFR_IO_ADDR(CONCAT_EXPAND(PIN, W1_PORT_LETTER)))
+  );
+
+  // Total samples = 7 + 9 = 16
+  return bittest > 0? 0 : 1;
 }
 
 /**
  * Forces slaves into next state and then send a 1 or 0
  * @param bit [boolean] Send a 0 if zero, otherwise send 1
  */
-void wire1Write(uint8_t bit) {
+uint8_t wire1Write(uint8_t bit) {
   // Hold for >1 us to update state of slaves
   wire1Hold();
-  if (wire1Poll4Release(1)) {
-    return; // Wire went high even though we're pulling it down!
-  }
 
   // Release before delaying if sending 1
   if (bit) {
@@ -123,4 +189,5 @@ void wire1Write(uint8_t bit) {
 
   _delay_us(60);
   wire1Release();
+  return 0;
 }
