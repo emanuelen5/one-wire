@@ -133,7 +133,7 @@ int8_t wire1Reset(void) {
  * Forces slaves into next state and then reads the returned value
  * @return  0 if wire was held low, otherwise nonzero
  */
-int8_t wire1Read(void) {
+int8_t wire1ReadBit(void) {
   uint8_t bittest = 0;
   // Store the register so we can use it throughout the function
   asm volatile(
@@ -178,16 +178,47 @@ int8_t wire1Read(void) {
  * Forces slaves into next state and then send a 1 or 0
  * @param bit [boolean] Send a 0 if zero, otherwise send 1
  */
-uint8_t wire1Write(uint8_t bit) {
+void wire1WriteBit(uint8_t bit) {
+  asm volatile("nop");
   // Hold for >1 us to update state of slaves
   wire1Hold();
 
+  // Wait 5 cycles
+  asm volatile(
+    "nop \n\t"
+    "nop \n\t"
+    "nop \n\t"
+    "nop \n\t"
+    "nop \n\t"
+  );
   // Release before delaying if sending 1
   if (bit) {
     wire1Release();
+    _delay_us(60);
+  } else {
+    _delay_us(60);
+    wire1Release();
   }
+}
 
-  _delay_us(60);
-  wire1Release();
-  return 0;
+/**
+ * Reads a byte over one-wire, LSB first
+ */
+uint8_t wire1ReadByte(void) {
+  uint8_t readByte = 0;
+  for (int i = 0; i < 8; i++) {
+	if (wire1ReadBit()) {
+      readByte |= BV(i);
+    }
+  }
+  return readByte;
+}
+
+/**
+ * Writes a byte over one-wire, LSB first
+ */
+void wire1WriteByte(uint8_t writeByte) {
+  for (int i = 0; i < 8; i++) {
+    wire1WriteBit(writeByte & BV(i));
+  }
 }
