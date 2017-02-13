@@ -14,14 +14,14 @@
   #define W1_PIN_POS      0
 #endif
 
-#define CONCAT(a, b)        a ## b // Concatenates a and b
-#define CONCAT_EXPAND(a, b) CONCAT(a, b) // Resolves a and b, then concatenates them
+#define CONCAT(a, b)         a ## b // Concatenates a and b
+#define CONCAT_EXPAND(a, b)  CONCAT(a, b) // Resolves a and b, then concatenates them
 
-#define STRINGIFY(a)        #a // Puts quotes around a
-#define STRINGIFY_EXPAND(a) STRINGIFY(a) // Resolves a, then turns into string
+#define STRINGIFY(a)         #a // Puts quotes around a
+#define STRINGIFY_EXPAND(a)  STRINGIFY(a) // Resolves a, then turns into string
 
 /**
- * Drives the wire low.
+ * Hold the wire down (drives it low).
  */
 inline void wire1Hold(void) {
   CONCAT_EXPAND(PORT, W1_PORT_LETTER) &= ~BV(W1_PIN_POS); // Drive low/remove pullup
@@ -30,7 +30,7 @@ inline void wire1Hold(void) {
 
 /**
  * Releases the wire and lets it be pulled up.
- *  Also adds the internal pullup to strengthen the pull up "force".
+ * Also adds the internal pullup to strengthen the pull up "force".
  */
 inline void wire1Release(void) {
   CONCAT_EXPAND(DDR,  W1_PORT_LETTER) &= ~BV(W1_PIN_POS); // Pin as input
@@ -205,6 +205,7 @@ void wire1WriteBit(uint8_t bit) {
 
 /**
  * Reads a byte over one-wire, LSB first
+ * @return  The value that was read
  */
 uint8_t wire1ReadByte(void) {
   uint8_t readByte = 0;
@@ -218,6 +219,7 @@ uint8_t wire1ReadByte(void) {
 
 /**
  * Writes a byte over one-wire, LSB first
+ * @param  writeByte    The byte to write over the wire
  */
 void wire1WriteByte(uint8_t writeByte) {
   for (int i = 0; i < 8; i++) {
@@ -226,20 +228,27 @@ void wire1WriteByte(uint8_t writeByte) {
 }
 
 /**
- * Searches the address space for the next larger device than addrStart
+ * Searches the address space for the next larger device address
+ * compared to addrStart
  * @param  addrOut      The output address for the returned ROM
- * @param  lastConfBit  The last value of the conflict bit (zero or nonzero)
- * @param  lastConfPos  The bit position of the conflict bit (0-63 if conflict)
- * @return              0 if no device was identified, 1 if device was identified, any other means error
+ * @param  addrStart    Starting point for searching for ROM 
+ *                      (last found ROM or all 0 if starting new search)
+ * @param  lastConfPos  The bit position of the conflict bit 
+ *                      (0-63)
+ * @return              0 if no device was identified, 1 if device a
+ *                      was identified, any other means error
  */
-uint8_t wire1SearchROM(uint8_t const *addrOut, const uint8_t lastConfBit, const uint8_t lastConfPos) {
+uint8_t wire1SearchROM(
+  uint8_t const *addrOut, 
+  uint8_t const *addrStart, 
+  const uint8_t lastConfPos
+) {
   if (wire1Reset() != 1) // Detect if there are any devices connected
     return -1;
 
   wire1WriteByte(0xF0);
 
   uint8_t addrAck, addrNAck;
-
   uint8_t iByte = -1;
   for (int iBit = 0; iBit < 64; iBit++) {
     // Next byte when bit has "overflowed"
@@ -250,6 +259,18 @@ uint8_t wire1SearchROM(uint8_t const *addrOut, const uint8_t lastConfBit, const 
 
     addrAck  = wire1ReadBit();
     addrNAck = wire1ReadBit();
+
+    if (!addrAck && !addrNAck) { // 00
+      // if (iBit == lastConfPos) {
+
+      // }
+    } else if (!addrAck && addrNAck) { // 01
+
+    } else if (addrAck && !addrNAck) { // 10
+
+    } else if (addrAck && addrNAck) { // 11
+
+    }
   }
 
 }
