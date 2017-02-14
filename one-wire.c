@@ -55,7 +55,7 @@ uint8_t wire1Poll4Hold(uint8_t nloops) {
       "tst  %[nloops] \n\t"
       "breq done%= \n\t"
     "loop%=:" 
-      "subi %[count], 1  \n\t"        // Add 1 to counter (loop time)
+      "subi %[count], 1  \n\t"
       "sbic %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // Exit loop if wire is held low
       "brne loop%= \n\t" // Keep looping if larger than 0
 
@@ -228,49 +228,92 @@ void wire1WriteByte(uint8_t writeByte) {
 }
 
 /**
- * Searches the address space for the next larger device address
- * compared to addrStart
- * @param  addrOut      The output address for the returned ROM
- * @param  addrStart    Starting point for searching for ROM 
- *                      (last found ROM or all 0 if starting new search)
- * @param  lastConfPos  The bit position of the conflict bit 
- *                      (0-63)
- * @return              0 if no device was identified, 1 if device a
- *                      was identified, any other means error
+ * Mask out a specific bit in a bit array
+ * @param  arr  Array of bytes (at most 32 byte)
+ * @param  bit  Bit position in array
+ * @return      The bit masked out in the byte that it corresponds to
  */
-uint8_t wire1SearchROM(
-  uint8_t const *addrOut, 
-  uint8_t const *addrStart, 
-  const uint8_t lastConfPos
-) {
-  if (wire1Reset() != 1) // Detect if there are any devices connected
-    return -1;
+inline static uint8_t maskBitInArray(uint8_t *const arr, uint8_t bit) {
+  return arr[bit/8] & BV(bit%8);
+}
 
+/**
+ * Searches the address space for the next larger device address
+ * compared to addrStart. Reads ACK and NACK of the ROM bit and decides
+ * what branch to choose depending on the conflict position in the last 
+ * search and the start address.
+ * 
+ * @param  addrOut      The output address for the returned ROM
+ * @param  addrStart    Starting point for searching ROM address from 
+ *                      (shall be a zero-vector if starting a new search,
+ *                      or the last found ROM address if continuing search)
+ * @param  lastConfPos  The bit position of the conflict bit in the last 
+ *                      search (shall be above 63 - signed or unsigned if 
+ *                      starting a new search, otherwise the returned value 
+ *                      from the last search)
+ * @return              A negative value if error, 0-63 if a device was found
+ *                      and there exists a device with ROM address with a 
+ *                      higher address which conflicts at that bit, 64 if a
+ *                      device was found but no devices had a higher address.
+ */
+int8_t wire1SearchROM(
+  uint8_t *const addrOut,
+  uint8_t *const addrStart,
+  const int8_t lastConfPos
+) {
+  // Detect if there are any devices connected and init ROM command
+  if (wire1Reset() != 1) {
+    return -1; // Nothing connected!
+  }
+
+  // Issue the search ROM command to one-wire devices
   wire1WriteByte(0xF0);
 
+  int8_t currConfPos[2] = {0, 0};
   uint8_t addrAck, addrNAck;
   uint8_t iByte = -1;
+  uint8_t writeBit;
   for (int iBit = 0; iBit < 64; iBit++) {
-    // Next byte when bit has "overflowed"
-    if ((iBit+1) % 8 == 0) {
-      addrOut[iByte][iBit] = 0;
+    // Go to next byte when bit has "overflowed"
+    if (iBit % 8 == 0) {
+      addrOut[iByte] = 0;
       iByte++;
     }
 
+    // Read the ACK and NACK bit (ROM bit)
     addrAck  = wire1ReadBit();
     addrNAck = wire1ReadBit();
 
-    if (!addrAck && !addrNAck) { // 00
-      // if (iBit == lastConfPos) {
+    if (!addrAck && !addrNAck) { // Conflict - driven low both times
+      currConfPos[0] = iBit+1;
+      currConfPos[1] = currConfPos[0];
 
-      // }
-    } else if (!addrAck && addrNAck) { // 01
+      // If at the conflict position, take the other branch, 
+      // otherwise keep following the search start direction
+      if (iBit == lastConfPos) {
+        writeBit = !maskBitInArray(addrStart, iBit);
+      } else {
+        writeBit = maskBitInArray(addrStart, iBit);
+      }
+      wire1WriteBit(writeBit); // Choose 0 if not supposed to branch yet
+    } else if (addrAck && addrNAck) { // No device responds: strange error!
+      return -128;
+    } else { // ACK and NACK were different => no discrepancy
 
-    } else if (addrAck && !addrNAck) { // 10
-
-    } else if (addrAck && addrNAck) { // 11
-
+      // Check that the read ROM bit and the search are the same
+      if (!addrAck != !maskBitInArray(addrStart, iBit)) {
+        wire1WriteBit(addrAck);
+      } else {
+        // If not equal then it is an error?
+        return -2;
+      }
+      if (addrAck) {
+        addrOut[iByte] |= BV(iBit%8);
+      }
     }
   }
+
+  // Correctly found a device!
+  return 1;
 
 }
