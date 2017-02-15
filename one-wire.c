@@ -150,6 +150,7 @@ int8_t wire1ReadBit(void) {
 
   // Supersampe wire 24 times for 60 us to determine if it is driven low
   asm volatile(
+      "nop \n\t"
     "loop:"
       "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // 1
       "inc  %[bittest]                                \n\t" // 2
@@ -173,7 +174,7 @@ int8_t wire1ReadBit(void) {
   );
 
   // Total samples = 7 + 9 = 16
-  return bittest > 0? 0 : 1;
+  return bittest; // If 10 us of low or higher
 }
 
 /**
@@ -185,12 +186,8 @@ void wire1WriteBit(uint8_t bit) {
   // Hold for >1 us to update state of slaves
   wire1Hold();
 
-  // Wait 5 cycles
+  // Wait 1 cycle
   asm volatile(
-    "nop \n\t"
-    "nop \n\t"
-    "nop \n\t"
-    "nop \n\t"
     "nop \n\t"
   );
   // Release before delaying if sending 1
@@ -210,7 +207,7 @@ void wire1WriteBit(uint8_t bit) {
 uint8_t wire1ReadByte(void) {
   uint8_t readByte = 0;
   for (int i = 0; i < 8; i++) {
-	if (wire1ReadBit()) {
+    if (wire1ReadBit()) {
       readByte |= BV(i);
     }
   }
@@ -222,9 +219,13 @@ uint8_t wire1ReadByte(void) {
  * @param  writeByte    The byte to write over the wire
  */
 void wire1WriteByte(uint8_t writeByte) {
+  // printString("\n\rWriting byte: ");
   for (int i = 0; i < 8; i++) {
+	// printString("  ");
+	// printHexByte((writeByte & BV(i)) >> i);
     wire1WriteBit(writeByte & BV(i));
   }
+  // printString("\n\r");
 }
 
 /**
@@ -256,9 +257,9 @@ inline static uint8_t maskBitInArray(uint8_t *const arr, uint8_t bit) {
  *                      higher address which conflicts at that bit, 64 if a
  *                      device was found but no devices had a higher address.
  */
-int8_t wire1SearchROM(
-  uint8_t *const addrOut,
-  uint8_t *const addrStart,
+int8_t wire1SearchLargerROM(
+  uint8_t * addrOut,
+  uint8_t * addrStart,
   const int8_t lastConfPos
 ) {
   // Detect if there are any devices connected and init ROM command
@@ -266,47 +267,47 @@ int8_t wire1SearchROM(
     return -1; // Nothing connected!
   }
 
+  PORTB ^= BV(1); // Trigger condition for oscilloscope
   // Issue the search ROM command to one-wire devices
   wire1WriteByte(0xF0);
+  PORTB ^= BV(1); // Trigger condition for oscilloscope
 
-  int8_t currConfPos[2] = {0, 0};
+  int8_t currConfPos = 64;
   uint8_t addrAck, addrNAck;
   uint8_t iByte = -1;
   uint8_t writeBit;
   for (int iBit = 0; iBit < 64; iBit++) {
     // Go to next byte when bit has "overflowed"
     if (iBit % 8 == 0) {
-      addrOut[iByte] = 0;
       iByte++;
+      addrOut[iByte] = 0;
     }
 
     // Read the ACK and NACK bit (ROM bit)
-    addrAck  = wire1ReadBit();
-    addrNAck = wire1ReadBit();
+    addrAck  = !wire1ReadBit();
+    addrNAck = !wire1ReadBit();
 
     if (!addrAck && !addrNAck) { // Conflict - driven low both times
-      currConfPos[0] = iBit+1;
-      currConfPos[1] = currConfPos[0];
 
       // If at the conflict position, take the other branch, 
       // otherwise keep following the search start direction
       if (iBit == lastConfPos) {
-        writeBit = !maskBitInArray(addrStart, iBit);
+        // Previously visited ROM's that were in conflict will have been zero, 
+        // since we only search upward
+        writeBit = 1;
       } else {
         writeBit = maskBitInArray(addrStart, iBit);
+        // There is something to search that has not been searched before in this branch,
+        // so store this location for next search
+        if (!maskBitInArray(addrStart, iBit)) {
+          currConfPos = iBit;
+        }
       }
       wire1WriteBit(writeBit); // Choose 0 if not supposed to branch yet
     } else if (addrAck && addrNAck) { // No device responds: strange error!
       return -128;
-    } else { // ACK and NACK were different => no discrepancy
-
-      // Check that the read ROM bit and the search are the same
-      if (!addrAck != !maskBitInArray(addrStart, iBit)) {
-        wire1WriteBit(addrAck);
-      } else {
-        // If not equal then it is an error?
-        return -2;
-      }
+    } else { // ACK and NACK were different => no discrepancy, just follow along
+      wire1WriteBit(addrAck);
       if (addrAck) {
         addrOut[iByte] |= BV(iBit%8);
       }
@@ -314,6 +315,6 @@ int8_t wire1SearchROM(
   }
 
   // Correctly found a device!
-  return 1;
+  return currConfPos;
 
 }
