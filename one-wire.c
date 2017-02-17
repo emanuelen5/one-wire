@@ -20,6 +20,16 @@
 #define STRINGIFY(a)         #a // Puts quotes around a
 #define STRINGIFY_EXPAND(a)  STRINGIFY(a) // Resolves a, then turns into string
 
+static enum wire1state_t wire1state = idle; 
+
+/**
+ * Function for returning the state of the one-wire interface
+ * @return  The state value
+ */
+enum wire1state_t wire1GetState() {
+  return wire1state;
+}
+
 /**
  * Hold the wire down (drives it low).
  */
@@ -121,12 +131,15 @@ int8_t wire1Reset(void) {
   if (!wire1Poll4Hold(15)) { // (66) 74 us = 4*15 + 14
     return 0;
   }
+
+  wire1state = idle;
   // Wire shall be held by slave for 60-240 us
   if (!wire1Poll4Release(60)) { // (246) 254 us = 4*60 + 14
     return -1; // The wire was never released
   } else if (wire1Poll4Hold(58)) { // Wait out the rest of the slot
     return -2;
   } else {
+    wire1state = rom_command;
     return 1; // Success!
   }
 }
@@ -219,13 +232,9 @@ uint8_t wire1ReadByte(void) {
  * @param  writeByte    The byte to write over the wire
  */
 void wire1WriteByte(uint8_t writeByte) {
-  // printString("\n\rWriting byte: ");
   for (int i = 0; i < 8; i++) {
-	// printString("  ");
-	// printHexByte((writeByte & BV(i)) >> i);
     wire1WriteBit(writeByte & BV(i));
   }
-  // printString("\n\r");
 }
 
 /**
@@ -244,10 +253,12 @@ inline static uint8_t maskBitInArray(uint8_t *const arr, uint8_t bit) {
  * what branch to choose depending on the conflict position in the last 
  * search and the start address.
  * 
- * @param  addrOut      The output address for the returned ROM
+ * @param  addrOut      The output address for the returned ROM (8 byte)
  * @param  addrStart    Starting point for searching ROM address from 
  *                      (shall be a zero-vector if starting a new search,
- *                      or the last found ROM address if continuing search)
+ *                      or the last found ROM address if continuing search).
+ *                      Can be a pointer to the same location as the output
+ *                      address.
  * @param  lastConfPos  The bit position of the conflict bit in the last 
  *                      search (shall be above 63 - signed or unsigned if 
  *                      starting a new search, otherwise the returned value 
@@ -303,6 +314,10 @@ int8_t wire1SearchLargerROM(
           currConfPos = iBit;
         }
       }
+      // Update the output address
+      if (writeBit) {
+        addrOut[iByte] |= BV(iBit%8);
+      }
       wire1WriteBit(writeBit); // Choose 0 if not supposed to branch yet
     } else if (addrAck && addrNAck) { // No device responds: strange error!
       return -128;
@@ -314,7 +329,36 @@ int8_t wire1SearchLargerROM(
     }
   }
 
+  wire1state = function_command;
   // Correctly found a device!
   return currConfPos;
 
 }
+
+/**
+ * Read the ROM address of the one-wire device
+ * (as long as there is only one slave connected)
+ * @param addr  Pointer to an 8-byte array where the read ROM address shall be stored
+ */
+void wire1ReadSingleROM(uint8_t *const addr) {
+  wire1Reset();
+  wire1WriteByte(0x33);
+  for (int i = 0; i < 8; i++) {
+    addr[i] = wire1ReadByte();
+  }
+  wire1state = function_command;
+}
+
+/**
+ * Sends the ROM address of a device that we want to access.
+ * @param addr  Pointer to an 8-byte array where the ROM address is stored
+ */
+void wire1MatchROM(uint8_t *const addr) {
+  wire1Reset();
+  wire1WriteByte(0x55);
+  for (int i = 0; i < 8; i++) {
+    wire1WriteByte(addr[i]);
+  }
+  wire1state = function_command;
+}
+
