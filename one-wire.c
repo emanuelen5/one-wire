@@ -1,4 +1,3 @@
-#include <util/delay.h>
 #include <avr/io.h>
 #include "one-wire.h"
 
@@ -150,18 +149,14 @@ int8_t wire1Reset(void) {
  */
 int8_t wire1ReadBit(void) {
   uint8_t bittest = 0;
-  // Store the register so we can use it throughout the function
-  asm volatile(
-      "push r25     \n\t"
-      "ldi  r25, 4  \n\t" // 4*15 = 60
-    );
+  uint8_t i = 5;
 
   // Hold for >1 us to update state of slaves
   wire1Hold();
   asm volatile("nop\n\t" : : ); // Wait one cycle before releasing
   wire1Release();
 
-  // Supersampe wire 24 times for 60 us to determine if it is driven low
+  // Supersample wire 24 times for 60 us to determine if it is driven low
   asm volatile(
       "nop \n\t"
     "loop:"
@@ -178,16 +173,15 @@ int8_t wire1ReadBit(void) {
       "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // 11
       "inc  %[bittest]                                \n\t" // 12
       // Go back
-      "subi r25, 1                                    \n\t" // 13
+      "subi %[i], 1                                   \n\t" // 13
       "brne loop                                      \n\t" // 14 + 1
-      // Finished
-      "pop   r25                                      \n\t" // 20
-    : [bittest]  "+r" (bittest)       // Output operands
+    : [bittest]  "+r" (bittest),  // Output operands
+      [i]        "+r" (i)
     : [port]     "I"  (_SFR_IO_ADDR(CONCAT_EXPAND(PIN, W1_PORT_LETTER)))
   );
 
   // Total samples = 7 + 9 = 16
-  return bittest; // If 10 us of low or higher
+  return bittest>0?0:0xFF; // If sampled low at least one time, set to 0
 }
 
 /**
@@ -195,22 +189,18 @@ int8_t wire1ReadBit(void) {
  * @param bit [boolean] Send a 0 if zero, otherwise send 1
  */
 void wire1WriteBit(uint8_t bit) {
-  asm volatile("nop");
   // Hold for >1 us to update state of slaves
   wire1Hold();
 
-  // Wait 1 cycle
-  asm volatile(
-    "nop \n\t"
-  );
   // Release before delaying if sending 1
   if (bit) {
     wire1Release();
-    _delay_us(60);
+    wire1Poll4Hold(15);
   } else {
-    _delay_us(60);
+    wire1Poll4Release(15); // (66) 74 us = 4*15 + 14
     wire1Release();
   }
+  asm volatile("nop");
 }
 
 /**
@@ -295,8 +285,8 @@ int8_t wire1SearchLargerROM(
     }
 
     // Read the ACK and NACK bit (ROM bit)
-    addrAck  = !wire1ReadBit();
-    addrNAck = !wire1ReadBit();
+    addrAck  = wire1ReadBit();
+    addrNAck = wire1ReadBit();
 
     if (!addrAck && !addrNAck) { // Conflict - driven low both times
 
