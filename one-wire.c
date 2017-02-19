@@ -4,12 +4,12 @@
 // MACROS for being able to use convenient W1_-"variables
 #ifndef W1_PORT_LETTER
   #warning W1_PORT_LETTER needs to be defined to be able to resolve \
-          the 1-wire interface position. It was set B as default.
+          the 1-wire interface port. It was set to B as default.
   #define W1_PORT_LETTER  B
 #endif
 #ifndef W1_PIN_POS
   #warning W1_PIN_POS needs to be defined to be able to resolve \
-           the 1-wire interface position. It was set 0 as default.
+           the 1-wire interface pin position. It was set to 0 as default.
   #define W1_PIN_POS      0
 #endif
 
@@ -19,7 +19,13 @@
 #define STRINGIFY(a)         #a // Puts quotes around a
 #define STRINGIFY_EXPAND(a)  STRINGIFY(a) // Resolves a, then turns into string
 
-static enum wire1state_t wire1state = idle; 
+static enum wire1state_t wire1state = IDLE;
+static int8_t wire1Search(
+  uint8_t * addrOut,
+  uint8_t * addrStart,
+  const uint8_t lastConfPos,
+  const uint8_t rom_command
+);
 
 /**
  * Function for returning the state of the one-wire interface
@@ -33,7 +39,7 @@ enum wire1state_t wire1GetState() {
  * Hold the wire down (drives it low).
  */
 inline void wire1Hold(void) {
-  CONCAT_EXPAND(PORT, W1_PORT_LETTER) &= ~BV(W1_PIN_POS); // Drive low/remove pullup
+  CONCAT_EXPAND(PORT, W1_PORT_LETTER) &= ~BV(W1_PIN_POS); // Remove pullup/drive low
   CONCAT_EXPAND(DDR,  W1_PORT_LETTER) |=  BV(W1_PIN_POS); // Pin as output
 }
 
@@ -63,9 +69,10 @@ uint8_t wire1Poll4Hold(uint8_t nloops) {
   asm volatile(
       "tst  %[nloops] \n\t"
       "breq done%= \n\t"
-    "loop%=:" 
+    "loop%=:"
       "subi %[count], 1  \n\t"
-      "sbic %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // Exit loop if wire is held low
+       // Exit loop if wire is held low
+      "sbic %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t"
       "brne loop%= \n\t" // Keep looping if larger than 0
 
       "brne done%= \n\t"
@@ -96,9 +103,10 @@ uint8_t wire1Poll4Release(uint8_t nloops) {
   asm volatile(
       "tst  %[nloops] \n\t"
       "breq done%= \n\t"
-    "loop%=:" 
+    "loop%=:"
       "subi %[count], 1  \n\t"        // Add 1 to counter (loop time)
-      "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t" // Exit loop if wire is held low
+      // Exit loop if wire is held low
+      "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t"
       "brne loop%= \n\t" // Keep looping if larger than 0
 
       "brne done%= \n\t"
@@ -116,7 +124,7 @@ uint8_t wire1Poll4Release(uint8_t nloops) {
  * Resets all 1-wire devices and checks if there are any slaves that responds.
  * The time of the last sample is written within parentheses as comments after
  * the poll calls. The total time for the function call is written after that.
- * 
+ *
  * @return  negative if error, 0 if no slave responds, 1 if a slave responds
  */
 int8_t wire1Reset(void) {
@@ -128,17 +136,19 @@ int8_t wire1Reset(void) {
 
   // Check if there is a response within 60 us
   if (!wire1Poll4Hold(15)) { // (66) 74 us = 4*15 + 14
+    wire1state = IDLE;
     return 0;
   }
 
-  wire1state = idle;
   // Wire shall be held by slave for 60-240 us
   if (!wire1Poll4Release(60)) { // (246) 254 us = 4*60 + 14
+    wire1state = IDLE;
     return -1; // The wire was never released
   } else if (wire1Poll4Hold(58)) { // Wait out the rest of the slot
+    wire1state = IDLE;
     return -2;
   } else {
-    wire1state = rom_command;
+    wire1state = ROM_COMMAND;
     return 1; // Success!
   }
 }
@@ -238,40 +248,38 @@ inline static uint8_t maskBitInArray(uint8_t *const arr, uint8_t bit) {
 }
 
 /**
- * Searches the address space for the next larger device address
- * compared to addrStart. Reads ACK and NACK of the ROM bit and decides
- * what branch to choose depending on the conflict position in the last 
- * search and the start address.
- * 
- * @param  addrOut      The output address for the returned ROM (8 byte)
- * @param  addrStart    Starting point for searching ROM address from 
- *                      (shall be a zero-vector if starting a new search,
- *                      or the last found ROM address if continuing search).
- *                      Can be a pointer to the same location as the output
- *                      address.
- * @param  lastConfPos  The bit position of the conflict bit in the last 
- *                      search (shall be above 63 - signed or unsigned if 
- *                      starting a new search, otherwise the returned value 
- *                      from the last search)
+ * Internal function that implements the one-wire search algorithm. Used for
+ * both the search ROM and alarm search.
+ *
+ * @param  addrOut      The output address for the returned ROM (8 bytes)
+ * @param  addrStart    Starting point for searching ROM address from
+ *                      (shall be the last found ROM address if continuing
+ *                      a search). Can be a pointer to the same location as the
+ *                      output address.
+ * @param  lastConfPos  The bit position of the conflict bit in the last
+ *                      search (shall be above 63 unsigned if starting a new
+ *                      search, otherwise the returned value from the last
+ *                      search)
+ * @param  rom_command  The command to issue before commencing the search
+ *                      algorithm.
  * @return              A negative value if error, 0-63 if a device was found
- *                      and there exists a device with ROM address with a 
+ *                      and there exists a device with ROM address with a
  *                      higher address which conflicts at that bit, 64 if a
  *                      device was found but no devices had a higher address.
  */
-int8_t wire1SearchLargerROM(
+static int8_t wire1Search(
   uint8_t * addrOut,
   uint8_t * addrStart,
-  const int8_t lastConfPos
+  const uint8_t lastConfPos,
+  const uint8_t rom_command
 ) {
   // Detect if there are any devices connected and init ROM command
   if (wire1Reset() != 1) {
     return -1; // Nothing connected!
   }
 
-  PORTB ^= BV(1); // Trigger condition for oscilloscope
   // Issue the search ROM command to one-wire devices
-  wire1WriteByte(0xF0);
-  PORTB ^= BV(1); // Trigger condition for oscilloscope
+  wire1WriteByte(rom_command);
 
   int8_t currConfPos = 64;
   uint8_t addrAck, addrNAck;
@@ -290,12 +298,15 @@ int8_t wire1SearchLargerROM(
 
     if (!addrAck && !addrNAck) { // Conflict - driven low both times
 
-      // If at the conflict position, take the other branch, 
+      // If at the conflict position, take the other branch,
       // otherwise keep following the search start direction
       if (iBit == lastConfPos) {
-        // Previously visited ROM's that were in conflict will have been zero, 
+        // Previously visited ROM's that were in conflict will have been zero,
         // since we only search upward
         writeBit = 1;
+      // -1 means that it is uninitialized => find lowest ROM
+      } else if (lastConfPos == -1) {
+        writeBit = 0;
       } else {
         writeBit = maskBitInArray(addrStart, iBit);
         // There is something to search that has not been searched before in this branch,
@@ -319,24 +330,95 @@ int8_t wire1SearchLargerROM(
     }
   }
 
-  wire1state = function_command;
-  // Correctly found a device!
-  return currConfPos;
+  // Make sure that the ROM was read correctly, otherwise the device will not
+  // have been selected
+  if (addrOut[7] == crc8(0, W1_CRC_POLYNOMIAL, addrOut, 7)) {
+    wire1state = FUNCTION_COMMAND;
+    return currConfPos;
+  // CRC did not match. Most probably, no device has been selected
+  } else {
+    wire1state = IDLE;
+    return -1;
+  }
+}
 
+/**
+ * Searches the address space for the next larger device address
+ * compared to addrStart. Reads ACK and NACK of the ROM bit and decides
+ * what branch to choose depending on the conflict position in the last
+ * search and the start address.
+ *
+ * @param  addrOut      The output address for the returned ROM (8 bytes)
+ * @param  addrStart    Starting point for searching ROM address from
+ *                      (shall be the last found ROM address if continuing
+ *                      a search). Can be a pointer to the same location as the
+ *                      output address.
+ * @param  lastConfPos  The bit position of the conflict bit in the last
+ *                      search (shall be above 63 unsigned if starting a new
+ *                      search, otherwise the returned value from the last
+ *                      search)
+ * @return              A negative value if error, 0-63 if a device was found
+ *                      and there exists a device with ROM address with a
+ *                      higher address which conflicts at that bit, 64 if a
+ *                      device was found but no devices had a higher address.
+ */
+int8_t wire1SearchLargerROM(
+  uint8_t * addrOut,
+  uint8_t * addrStart,
+  const uint8_t lastConfPos
+) {
+  return wire1Search(addrOut, addrStart, lastConfPos, 0xF0);
+}
+
+/**
+ * Searches the address space for the next larger device address
+ * compared to addrStart. Reads ACK and NACK of the ROM bit and decides
+ * what branch to choose depending on the conflict position in the last
+ * search and the start address.
+ *
+ * @param  addrOut      The output address for the returned ROM (8 bytes)
+ * @param  addrStart    Starting point for searching ROM address from
+ *                      (shall be the last found ROM address if continuing
+ *                      a search). Can be a pointer to the same location as the
+ *                      output address.
+ * @param  lastConfPos  The bit position of the conflict bit in the last
+ *                      search (shall be above 63 unsigned if starting a new
+ *                      search, otherwise the returned value from the last
+ *                      search)
+ * @return              A negative value if no alarms were triggered;
+ *                      0-63 if an alarm was triggered and there is another
+ *                      triggered alarm for a device with a higher ROM; 64 if an
+ *                      alarm was triggered for a device, but for no devices
+ *                      that had a higher ROM.
+ */
+int8_t wire1AlarmSearchLargerROM(
+  uint8_t * addrOut,
+  uint8_t * addrStart,
+  const uint8_t lastConfPos
+) {
+  return wire1Search(addrOut, addrStart, lastConfPos, 0xEC);
 }
 
 /**
  * Read the ROM address of the one-wire device
- * (as long as there is only one slave connected)
+ * (will ONLY work if there is only one slave connected!)
  * @param addr  Pointer to an 8-byte array where the read ROM address shall be stored
  */
 void wire1ReadSingleROM(uint8_t *const addr) {
   wire1Reset();
+  if (wire1state != ROM_COMMAND)
+    return;
   wire1WriteByte(0x33);
   for (int i = 0; i < 8; i++) {
     addr[i] = wire1ReadByte();
   }
-  wire1state = function_command;
+  // Make sure that the ROM was read correctly, otherwise the device will not
+  // have been selected
+  if (addr[7] == crc8(0, W1_CRC_POLYNOMIAL, addr, 7)) {
+    wire1state = FUNCTION_COMMAND;
+  } else {
+    wire1state = IDLE;
+  }
 }
 
 /**
@@ -345,10 +427,91 @@ void wire1ReadSingleROM(uint8_t *const addr) {
  */
 void wire1MatchROM(uint8_t *const addr) {
   wire1Reset();
+  if (wire1state != ROM_COMMAND)
+    return;
   wire1WriteByte(0x55);
   for (int i = 0; i < 8; i++) {
     wire1WriteByte(addr[i]);
   }
-  wire1state = function_command;
+  wire1state = FUNCTION_COMMAND;
 }
 
+/**
+ * Skips ROM addressing so that all devices can be written to simultaneously
+ */
+void wire1SkipROM() {
+  wire1Reset();
+  wire1WriteByte(0xCC);
+  wire1state = FUNCTION_COMMAND;
+}
+
+/**
+ * Read the power supply status of a one-wire device
+ * @return True if any of the addressed slaves use parasite power
+ */
+uint8_t wire1ReadPowerSuppy() {
+  if (wire1state != FUNCTION_COMMAND)
+    return 0;
+  wire1WriteByte(0xB4);
+  // Check if at least one of the responding slaves use parasite power
+  uint8_t parasite_power = !wire1ReadBit();
+  wire1state = IDLE;
+  return parasite_power;
+}
+
+/**
+ * Reads the scratchpad (8 byte) of a device.
+ * Verifies the CRC on read and then checks that they coincide.
+ * @param scratchpad  Pointer to 8 byte of data for the scratchpad
+ * @return            Whether the read was successful or not
+ */
+uint8_t wire1ReadScratchpad(uint8_t *const scratchpad) {
+  if (wire1state != FUNCTION_COMMAND)
+    return -1;
+  wire1WriteByte(0xBE);
+  for (int i = 0; i < 9; i++) {
+    scratchpad[i] = wire1ReadByte();
+  }
+  uint8_t ownCRC = crc8(0, W1_CRC_POLYNOMIAL,
+    scratchpad, 8);
+
+  if (ownCRC == scratchpad[8]) {
+    return 0;
+  } else {
+    return 1;
+  }
+}
+
+/**
+ * Calculate an 8-bit CRC for size number of byte of data. Shifts the data
+ * from MSB to LSB and XOR:s the polynomial each time the LSB of the remainder
+ * XOR the LSB of the shifted data is 1.
+ *
+ * @param  crcIn       The initialization for the CRC (input residual)
+ * @param  polynomial  The polynomial (XOR byte)
+ * @param  data        Array of data to calculate CRC for
+ * @param  size        Number of byte in the data
+ * @return             The calculated CRC
+ */
+uint8_t crc8(
+  uint8_t crcIn,
+  uint8_t polynomial,
+  uint8_t *const data,
+  uint8_t const size
+) {
+  // Input CRC can be used for chaining several CRC calculations
+  uint8_t remainder = crcIn;
+  for (int i = 0; i < size; i++) {
+    for (int j = 0; j < 8; j++) {
+      uint8_t data_bit_j = (data[i] >> j)  & BV(0);
+      uint8_t rem_bit_0  = remainder & BV(0);
+
+      // XOR between last remainder bit and bit j of the data
+      remainder >>= 1;
+      if (data_bit_j ^ rem_bit_0) {
+        remainder ^= polynomial;
+      }
+    }
+  }
+  return remainder;
+}
