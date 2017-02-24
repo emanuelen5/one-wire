@@ -1,3 +1,4 @@
+// For pin definitions
 #include <avr/io.h>
 #include "one-wire.h"
 
@@ -31,7 +32,7 @@ static int8_t wire1Search(
  * Function for returning the state of the one-wire interface
  * @return  The state value
  */
-enum wire1state_t wire1GetState() {
+enum wire1state_t wire1GetState(void) {
   return wire1state;
 }
 
@@ -155,11 +156,11 @@ int8_t wire1Reset(void) {
 
 /**
  * Forces slaves into next state and then reads the returned value
- * @return  0 if wire was held low, otherwise nonzero
+ * @return  0 if sampled low any amount of times; otherwise 0xFF
  */
-int8_t wire1ReadBit(void) {
+uint8_t wire1ReadBit(void) {
   uint8_t bittest = 0;
-  uint8_t i = 5;
+  uint8_t i = 4;
 
   // Hold for >1 us to update state of slaves
   wire1Hold();
@@ -402,12 +403,14 @@ int8_t wire1AlarmSearchLargerROM(
 /**
  * Read the ROM address of the one-wire device
  * (will ONLY work if there is only one slave connected!)
- * @param addr  Pointer to an 8-byte array where the read ROM address shall be stored
+ * @param addr  Pointer to an 8-byte array where the read ROM address shall be store
+ * @return      Whether the function call succeeded or not: 0 - OK; -1 - no 
+ *              device present; 1 - calculated CRC mismatch 
  */
-void wire1ReadSingleROM(uint8_t *const addr) {
+int8_t wire1ReadSingleROM(uint8_t *const addr) {
   wire1Reset();
   if (wire1state != ROM_COMMAND)
-    return;
+    return -1;
   wire1WriteByte(0x33);
   for (int i = 0; i < 8; i++) {
     addr[i] = wire1ReadByte();
@@ -416,70 +419,58 @@ void wire1ReadSingleROM(uint8_t *const addr) {
   // have been selected
   if (addr[7] == crc8(0, W1_CRC_POLYNOMIAL, addr, 7)) {
     wire1state = FUNCTION_COMMAND;
+    return 0;
   } else {
     wire1state = IDLE;
+    return 1;
   }
 }
 
 /**
  * Sends the ROM address of a device that we want to access.
  * @param addr  Pointer to an 8-byte array where the ROM address is stored
+ * @return      Whether the function call succeeded or not: 0 - OK; -1 - no 
+ *              device present
  */
-void wire1MatchROM(uint8_t *const addr) {
+int8_t wire1MatchROM(uint8_t *const addr) {
   wire1Reset();
   if (wire1state != ROM_COMMAND)
-    return;
+    return -1;
   wire1WriteByte(0x55);
   for (int i = 0; i < 8; i++) {
     wire1WriteByte(addr[i]);
   }
   wire1state = FUNCTION_COMMAND;
+  return 0;
 }
 
 /**
  * Skips ROM addressing so that all devices can be written to simultaneously
+ * @return      Whether the function call succeeded or not: 0 - OK; -1 - no 
+ *              device present
  */
-void wire1SkipROM() {
+int8_t wire1SkipROM(void) {
   wire1Reset();
+  if (wire1state != ROM_COMMAND)
+    return -1;
   wire1WriteByte(0xCC);
   wire1state = FUNCTION_COMMAND;
+  return 0;
 }
 
 /**
  * Read the power supply status of a one-wire device
- * @return True if any of the addressed slaves use parasite power
+ * @return 1 if any of the addressed slaves use parasite power; 0 if not; -2 if
+ *         not starting in the correct state.
  */
-uint8_t wire1ReadPowerSuppy() {
+int8_t wire1ReadPowerSuppy(void) {
   if (wire1state != FUNCTION_COMMAND)
-    return 0;
+    return -2;
   wire1WriteByte(0xB4);
   // Check if at least one of the responding slaves use parasite power
   uint8_t parasite_power = !wire1ReadBit();
   wire1state = IDLE;
   return parasite_power;
-}
-
-/**
- * Reads the scratchpad (8 byte) of a device.
- * Verifies the CRC on read and then checks that they coincide.
- * @param scratchpad  Pointer to 8 byte of data for the scratchpad
- * @return            Whether the read was successful or not
- */
-uint8_t wire1ReadScratchpad(uint8_t *const scratchpad) {
-  if (wire1state != FUNCTION_COMMAND)
-    return -1;
-  wire1WriteByte(0xBE);
-  for (int i = 0; i < 9; i++) {
-    scratchpad[i] = wire1ReadByte();
-  }
-  uint8_t ownCRC = crc8(0, W1_CRC_POLYNOMIAL,
-    scratchpad, 8);
-
-  if (ownCRC == scratchpad[8]) {
-    return 0;
-  } else {
-    return 1;
-  }
 }
 
 /**

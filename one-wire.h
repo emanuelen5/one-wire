@@ -32,22 +32,30 @@ typedef struct {
    *   [0] reserved
    */
   uint8_t status, status_init;
-  uint8_t scratchPad[9];
+  uint8_t scratchPad[8];
 } wire1_t;
 
 #define W1_STATUS_PARASITE_POWER_BIT 1
+#define W1_STATUS_ADDRESS_BIT        0
 
 #define W1_CRC_POLYNOMIAL            0x8C
 
+// "Macro" functions
 void    wire1Hold(void);
 void    wire1Release(void);
 uint8_t wire1Poll4Hold(uint8_t us);
 uint8_t wire1Poll4Release(uint8_t us);
+
+// Initialization of devices
 int8_t  wire1Reset(void);
-int8_t  wire1ReadBit(void);
+
+// Reading/writing bits/bytes
+uint8_t  wire1ReadBit(void);
 void    wire1WriteBit(uint8_t bit);
 uint8_t wire1ReadByte(void);
 void    wire1WriteByte(uint8_t writeByte);
+
+// Searching devices
 int8_t  wire1SearchLargerROM(
   uint8_t *const addrOut,
   uint8_t *const addrStart,
@@ -58,14 +66,19 @@ int8_t  wire1AlarmSearchLargerROM(
   uint8_t *const addrStart,
   const uint8_t lastConfPos
 );
-void wire1ReadSingleROM(uint8_t *const addr);
-void wire1MatchROM(uint8_t *const addr);
-void wire1SkipROM();
-uint8_t wire1ReadPowerSuppy();
-uint8_t wire1ReadScratchpad(uint8_t *const scratchpad);
+
+// Addressing devices
+int8_t wire1ReadSingleROM(uint8_t *const addr);
+int8_t wire1MatchROM(uint8_t *const addr);
+int8_t wire1SkipROM();
+
+int8_t wire1ReadPowerSuppy(void);
+
+// General functions
 uint8_t crc8(
   uint8_t crcIn,
   uint8_t polynomial,
   uint8_t *const array,
   uint8_t const size
 );
+enum wire1state_t wire1GetState(void);
