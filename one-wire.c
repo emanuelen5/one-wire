@@ -75,10 +75,10 @@ inline void wire1Release(void) {
 uint8_t wire1Poll4Hold(uint8_t nloops) {
   uint8_t i = nloops;
   asm volatile(
-      "tst  %[nloops] \n\t"
+      "tst  %A[nloops] \n\t"
       "breq done%= \n\t"
     "loop%=:"
-      "subi %[count], 1  \n\t"
+      "subi %A[count], 1  \n\t"
        // Exit loop if wire is held low
       "sbic %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t"
       "brne loop%= \n\t" // Keep looping if larger than 0
@@ -109,7 +109,7 @@ uint8_t wire1Poll4Hold(uint8_t nloops) {
 uint8_t wire1Poll4Release(uint8_t nloops) {
   uint8_t i = nloops;
   asm volatile(
-      "tst  %[nloops] \n\t"
+      "tst  %A[nloops] \n\t"
       "breq done%= \n\t"
     "loop%=:"
       "subi %A[count], 1  \n\t"
@@ -133,13 +133,15 @@ uint8_t wire1Poll4Release(uint8_t nloops) {
  * wire1SetupPoll4Idle must be run before this function with the time for the
  * polling to run. Takes about 95 cycles per loop.
  *
- * @return         0 if only '0' responses, otherwise the number of loops before
- *                 the '1' response
+ * @return         0 if only '0' responses, otherwise the number of read bits
+ *                 before a response of '1'
  */
 uint16_t wire1Poll4Idle(void) {
   uint16_t i;
-  for (i = 0; !wire1ReadBit() && i < wire1_idleloops; i++);
-  if (i == wire1_idleloops) {
+  uint8_t bitVal;
+  // Initialize at 1 since we will always sample one time
+  for (i = 1; !(bitVal = wire1ReadBit()) && i < wire1_idleloops; i++);
+  if (!bitVal) {
     // Timeout! The wire never went to IDLE state
     return 0;
   } else {
@@ -172,8 +174,8 @@ void wire1SetupPoll4Idle(uint16_t nloops) {
  */
 int8_t wire1Reset(void) {
   // Check first that we are not waiting for a slave to release the wire
-  if (wire1state == WAIT_POLL && !wire1Poll4Idle()) {
-    return -1;
+  if (wire1state == WAIT_POLL && wire1Poll4Idle() == 0) {
+    return -3;
   }
   // Hold for 450+ us to reset
   wire1Hold();
