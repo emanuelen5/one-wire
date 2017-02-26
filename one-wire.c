@@ -5,7 +5,7 @@
 // MACROS for being able to use convenient W1_-"variables
 #ifndef W1_PORT_LETTER
   #warning W1_PORT_LETTER needs to be defined to be able to resolve \
-          the 1-wire interface port. It was set to B as default.
+           the 1-wire interface port. It was set to B as default.
   #define W1_PORT_LETTER  B
 #endif
 #ifndef W1_PIN_POS
@@ -20,7 +20,14 @@
 #define STRINGIFY(a)         #a // Puts quotes around a
 #define STRINGIFY_EXPAND(a)  STRINGIFY(a) // Resolves a, then turns into string
 
+// The factor needed to multiply each delay with, since the code is 
+// optimized for an AVR with frequency of 1 MHz. 
+// Adding 1/2 MHz to make rounding correct.
+#define F_CPU_TIME_FACTOR ((F_CPU + 500000UL) / 1000000UL)
+
 static enum wire1state_t wire1state = IDLE;
+static uint16_t wire1_idleloops = 0;
+uint16_t wire1Poll4Idle(void);
 static int8_t wire1Search(
   uint8_t * addrOut,
   uint8_t * addrStart,
@@ -105,7 +112,7 @@ uint8_t wire1Poll4Release(uint8_t nloops) {
       "tst  %[nloops] \n\t"
       "breq done%= \n\t"
     "loop%=:"
-      "subi %[count], 1  \n\t"        // Add 1 to counter (loop time)
+      "subi %A[count], 1  \n\t"
       // Exit loop if wire is held low
       "sbis %[port], " STRINGIFY_EXPAND(W1_PIN_POS) " \n\t"
       "brne loop%= \n\t" // Keep looping if larger than 0
@@ -122,6 +129,41 @@ uint8_t wire1Poll4Release(uint8_t nloops) {
 }
 
 /**
+ * Polls the wire slaves a number of times, or until no slaves respond with 0.
+ * wire1SetupPoll4Idle must be run before this function with the time for the
+ * polling to run. Takes about 95 cycles per loop.
+ *
+ * @return         0 if only '0' responses, otherwise the number of loops before
+ *                 the '1' response
+ */
+uint16_t wire1Poll4Idle(void) {
+  uint16_t i;
+  for (i = 0; !wire1ReadBit() && i < wire1_idleloops; i++);
+  if (i == wire1_idleloops) {
+    // Timeout! The wire never went to IDLE state
+    return 0;
+  } else {
+    // The wire went to IDLE state, and the slaves are ready to be
+    // accessed again
+    wire1state = IDLE;
+    return i;
+  }
+}
+
+/**
+ * Set up for polling the wire at reset. If this function is run before a reset,
+ * the wire will run wire1Poll4Idle and check up to nloop times for response on
+ * the wire. The wait time increases with 95 cycles per nloops.
+ *
+ * @param  nloops  The number of loops to poll the wire for when running the
+ *                 reset
+ */
+void wire1SetupPoll4Idle(uint16_t nloops) {
+  wire1state = WAIT_POLL;
+  wire1_idleloops = nloops;
+}
+
+/**
  * Resets all 1-wire devices and checks if there are any slaves that responds.
  * The time of the last sample is written within parentheses as comments after
  * the poll calls. The total time for the function call is written after that.
@@ -129,6 +171,10 @@ uint8_t wire1Poll4Release(uint8_t nloops) {
  * @return  negative if error, 0 if no slave responds, 1 if a slave responds
  */
 int8_t wire1Reset(void) {
+  // Check first that we are not waiting for a slave to release the wire
+  if (wire1state == WAIT_POLL && !wire1Poll4Idle()) {
+    return -1;
+  }
   // Hold for 450+ us to reset
   wire1Hold();
   // Use our own precision delay (will not exit early, since we hold the wire)
@@ -333,7 +379,7 @@ static int8_t wire1Search(
 
   // Make sure that the ROM was read correctly, otherwise the device will not
   // have been selected
-  if (addrOut[7] == crc8(0, W1_CRC_POLYNOMIAL, addrOut, 7)) {
+  if (addrOut[W1_ADDR_BYTE_CRC] == crc8(0, W1_CRC_POLYNOMIAL, addrOut, 7)) {
     wire1state = FUNCTION_COMMAND;
     return currConfPos;
   // CRC did not match. Most probably, no device has been selected
@@ -368,7 +414,7 @@ int8_t wire1SearchLargerROM(
   uint8_t * addrStart,
   const uint8_t lastConfPos
 ) {
-  return wire1Search(addrOut, addrStart, lastConfPos, 0xF0);
+  return wire1Search(addrOut, addrStart, lastConfPos, W1_ROMCMD_SEARCH);
 }
 
 /**
@@ -397,27 +443,27 @@ int8_t wire1AlarmSearchLargerROM(
   uint8_t * addrStart,
   const uint8_t lastConfPos
 ) {
-  return wire1Search(addrOut, addrStart, lastConfPos, 0xEC);
+  return wire1Search(addrOut, addrStart, lastConfPos, W1_ROMCMD_ALARM);
 }
 
 /**
  * Read the ROM address of the one-wire device
  * (will ONLY work if there is only one slave connected!)
  * @param addr  Pointer to an 8-byte array where the read ROM address shall be store
- * @return      Whether the function call succeeded or not: 0 - OK; -1 - no 
- *              device present; 1 - calculated CRC mismatch 
+ * @return      Whether the function call succeeded or not: 0 - OK; -1 - no
+ *              device present; 1 - calculated CRC mismatch
  */
 int8_t wire1ReadSingleROM(uint8_t *const addr) {
   wire1Reset();
   if (wire1state != ROM_COMMAND)
     return -1;
-  wire1WriteByte(0x33);
+  wire1WriteByte(W1_ROMCMD_READ);
   for (int i = 0; i < 8; i++) {
     addr[i] = wire1ReadByte();
   }
   // Make sure that the ROM was read correctly, otherwise the device will not
   // have been selected
-  if (addr[7] == crc8(0, W1_CRC_POLYNOMIAL, addr, 7)) {
+  if (addr[W1_ADDR_BYTE_CRC] == crc8(0, W1_CRC_POLYNOMIAL, addr, 7)) {
     wire1state = FUNCTION_COMMAND;
     return 0;
   } else {
@@ -429,14 +475,14 @@ int8_t wire1ReadSingleROM(uint8_t *const addr) {
 /**
  * Sends the ROM address of a device that we want to access.
  * @param addr  Pointer to an 8-byte array where the ROM address is stored
- * @return      Whether the function call succeeded or not: 0 - OK; -1 - no 
+ * @return      Whether the function call succeeded or not: 0 - OK; -1 - no
  *              device present
  */
 int8_t wire1MatchROM(uint8_t *const addr) {
   wire1Reset();
   if (wire1state != ROM_COMMAND)
     return -1;
-  wire1WriteByte(0x55);
+  wire1WriteByte(W1_ROMCMD_MATCH);
   for (int i = 0; i < 8; i++) {
     wire1WriteByte(addr[i]);
   }
@@ -446,14 +492,14 @@ int8_t wire1MatchROM(uint8_t *const addr) {
 
 /**
  * Skips ROM addressing so that all devices can be written to simultaneously
- * @return      Whether the function call succeeded or not: 0 - OK; -1 - no 
+ * @return      Whether the function call succeeded or not: 0 - OK; -1 - no
  *              device present
  */
 int8_t wire1SkipROM(void) {
   wire1Reset();
   if (wire1state != ROM_COMMAND)
     return -1;
-  wire1WriteByte(0xCC);
+  wire1WriteByte(W1_ROMCMD_SKIP);
   wire1state = FUNCTION_COMMAND;
   return 0;
 }
@@ -463,10 +509,10 @@ int8_t wire1SkipROM(void) {
  * @return 1 if any of the addressed slaves use parasite power; 0 if not; -2 if
  *         not starting in the correct state.
  */
-int8_t wire1ReadPowerSuppy(void) {
+int8_t wire1ReadPowerSupply(void) {
   if (wire1state != FUNCTION_COMMAND)
     return -2;
-  wire1WriteByte(0xB4);
+  wire1WriteByte(W1_FUNC_PARASITE_POWER);
   // Check if at least one of the responding slaves use parasite power
   uint8_t parasite_power = !wire1ReadBit();
   wire1state = IDLE;

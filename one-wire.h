@@ -13,7 +13,9 @@ enum wire1state_t {
   // Can issue the function commands from here:
   // convert T [44h], write scratchpad [4Eh], read scratchpad [BEh],
   // copy scratchpad [48h], recall EEPROM [B8h], read power supply [B4h]
-  FUNCTION_COMMAND
+  FUNCTION_COMMAND,
+  // Must poll the line until it is free to get out of here
+  WAIT_POLL
 };
 
 /** The device type */
@@ -35,10 +37,26 @@ typedef struct {
   uint8_t scratchPad[8];
 } wire1_t;
 
+// Bit positions in the status byte for each device
 #define W1_STATUS_PARASITE_POWER_BIT 1
 #define W1_STATUS_ADDRESS_BIT        0
 
+// The polynomial used for the one wire CRC
 #define W1_CRC_POLYNOMIAL            0x8C
+
+// Significant byte positions in one wire address
+#define W1_ADDR_BYTE_CRC        7
+#define W1_ADDR_BYTE_DEV_TYPE   0
+
+// ROM commands
+#define W1_ROMCMD_READ             0x33
+#define W1_ROMCMD_MATCH            0x55
+#define W1_ROMCMD_SEARCH           0xF0
+#define W1_ROMCMD_ALARM            0xEC
+#define W1_ROMCMD_SKIP             0xCC
+
+// Function commands
+#define W1_FUNC_PARASITE_POWER       0xB4
 
 // "Macro" functions
 void    wire1Hold(void);
@@ -48,9 +66,10 @@ uint8_t wire1Poll4Release(uint8_t us);
 
 // Initialization of devices
 int8_t  wire1Reset(void);
+void    wire1SetupPoll4Idle(uint16_t nloops);
 
 // Reading/writing bits/bytes
-uint8_t  wire1ReadBit(void);
+uint8_t wire1ReadBit(void);
 void    wire1WriteBit(uint8_t bit);
 uint8_t wire1ReadByte(void);
 void    wire1WriteByte(uint8_t writeByte);
@@ -72,7 +91,7 @@ int8_t wire1ReadSingleROM(uint8_t *const addr);
 int8_t wire1MatchROM(uint8_t *const addr);
 int8_t wire1SkipROM();
 
-int8_t wire1ReadPowerSuppy(void);
+int8_t wire1ReadPowerSupply(void);
 
 // General functions
 uint8_t crc8(
